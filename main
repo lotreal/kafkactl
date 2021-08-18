@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+SSD="$( cd -P "$( dirname "$(realpath ${BASH_SOURCE[0]})" )" >/dev/null 2>&1 && pwd )"
+source $SSD/lib.sh
+source $SSD/.env
+
+KAFKA_ZK=${KAFKA_ZK:-localhost:2181}
+KAFKA_BS=${KAFKA_BS:-localhost:9092}
+KFAKA_BIN=${KAFKA_BIN:-./kafka_2.13-2.8.0/bin}
+
+__usage="
+Example:
+
+kafkactl connect debezium-mysql install
+
+kafkactl connector s3 ordering install
+"
+
+COMMAND=$1
+CONNECT_NAME=$2
+
+if [[ "$COMMAND" == "connect" ]]; then
+    ACTION=connect:$3
+fi
+
+if [[ "$COMMAND" == "connector" ]]; then
+    CONNECTOR=$3-${CONNECT_NAME}-connector
+    ACTION=connector:$4
+fi
+
+k8s:pod() {
+    kubectl --context au-inf -n kafka get pod -l strimzi.io/name=${CONNECT_NAME}-connect -o jsonpath="{.items[0].metadata.name}"
+}
+
+connect:rest() {
+    local method=$1
+    shift
+    local command="curl --silent -X ${method} localhost:8083$*"
+
+    local pod=$(k8s:pod)
+    echo "[INFO] $pod -> $command"
+    kubectl --context au-inf -n kafka exec $pod -- $command | jq
+}
+
+# --------
+connect:install() {
+    cd ~/Entropy/lotreal/homework
+    kubectl apply -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.yaml -n kafka --context au-inf
+}
+
+connect:remove() {
+    cd ~/Entropy/lotreal/homework
+    kubectl delete -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.yaml -n kafka --context au-inf
+}
+
+
+connect:connectors() {
+    connect:rest GET /connectors
+}
+
+connect:plugins() {
+    connect:rest GET /connector-plugins
+}
+
+
+# --------
+connector:install() {
+    local pod=$(k8s:pod)
+    local file=./kafka/cdc-kafka/${CONNECTOR}.json
+    echo "[INFO] $pod -> POST $file"
+    cd ~/Entropy/lotreal/homework
+    kubectl --context au-inf -n kafka exec $pod -- \
+            curl --silent -X POST -d "$(cat $file)" \
+            -H "Accept:application/json" \
+            -H "Content-Type:application/json" \
+            localhost:8083/connectors | jq
+}
+
+connector:update() {
+    local pod=$(k8s:pod)
+    local file=./kafka/cdc-kafka/${CONNECTOR}.json
+    echo "[INFO] $pod -> POST $file"
+    cd ~/Entropy/lotreal/homework
+    kubectl --context au-inf -n kafka exec $pod -- \
+            curl --silent -X PUT -d "$(cat $file)" \
+            -H "Accept:application/json" \
+            -H "Content-Type:application/json" \
+            localhost:8083/connectors/${CONNECTOR}/config | jq
+}
+
+connector:remove() {
+    connect:rest DELETE /connectors/${CONNECTOR}
+}
+
+connector:status() {
+    connect:rest GET /connectors/${CONNECTOR}/status
+}
+
+connector:config() {
+    connect:rest GET /connectors/${CONNECTOR}/config
+}
+
+connector:pause() {
+    connect:rest PUT /connectors/${CONNECTOR}/pause
+}
+
+connector:resume() {
+    connect:rest PUT /connectors/${CONNECTOR}/resume
+}
+
+connector:restart() {
+    connect:rest POST /connectors/${CONNECTOR}/restart
+}
+
+# --------
+topic:consumer() {
+    local topic=$1
+    ./bin/kafka-console-consumer.sh --bootstrap-server "$KAFKA_BS" --from-beginning --topic $topic
+}
+
+
+$ACTION
