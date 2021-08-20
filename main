@@ -18,13 +18,15 @@ kafkactl connector s3 ordering install
 "
 
 COMMAND=$1
-CONNECT_NAME=$2
+ACTION=$COMMAND
 
 if [[ "$COMMAND" == "connect" ]]; then
+    CONNECT_NAME=$2
     ACTION=connect:$3
 fi
 
 if [[ "$COMMAND" == "connector" ]]; then
+    CONNECT_NAME=$2
     CONNECTOR=$3-${CONNECT_NAME}-connector
     ACTION=connector:$4
 fi
@@ -114,10 +116,39 @@ connector:restart() {
 }
 
 # --------
-topic:consumer() {
-    local topic=$1
-    ./bin/kafka-console-consumer.sh --bootstrap-server "$KAFKA_BS" --from-beginning --topic $topic
+topic:info() {
+    ${KAFKA_BIN}/kafka-configs.sh --bootstrap-server "$KAFKA_BS" --entity-type topics --describe --all --entity-name $1
+    ${KAFKA_BIN}/kafka-topics.sh --bootstrap-server="$KAFKA_BS" --describe --topic $1
 }
 
+topic:list() {
+    ${KAFKA_BIN}/kafka-topics.sh --list --zookeeper $KAFKA_ZK
+}
 
-$ACTION
+topic:consumer() {
+    ${KAFKA_BIN}/kafka-console-consumer.sh --bootstrap-server "$KAFKA_BS" --from-beginning --topic $1
+}
+
+topic:count() {
+    ${KAFKA_BIN}/kafka-run-class.sh kafka.tools.GetOffsetShell --broker-list "$KAFKA_BS" --topic $1 --time -1
+}
+
+# --------
+debug() {
+    echo $KAFKA_URL
+}
+
+schemaregistry:install() {
+    # helm repo add confluentinc https://confluentinc.github.io/cp-helm-charts/
+    # helm repo update
+    cd INSTALL
+
+    # git clone https://github.com/confluentinc/cp-helm-charts.git
+    helm upgrade --install cdc-sr cp-helm-charts/charts/cp-schema-registry \
+         --kube-context au-inf -n kafka \
+         --set kafka.bootstrapServers="${KAFKA_URL}" \
+         --set imageTag=6.2.0
+}
+
+shift
+$ACTION $*
