@@ -3,19 +3,30 @@
 set -uo pipefail
 SSD="$( cd -P "$( dirname "$(realpath ${BASH_SOURCE[0]})" )" >/dev/null 2>&1 && pwd )"
 source $SSD/lib.sh
-source $SSD/.env
+source $(pwd)/.env
+
+RUNENV=${RUNENV:-testing}
 
 KAFKA_ZK=${KAFKA_ZK:-localhost:2181}
 KAFKA_BS=${KAFKA_BS:-localhost:9092}
 KFAKA_BIN=${KAFKA_BIN:-./kafka_2.13-2.8.0/bin}
+KAFKA_URL="PLAINTEXT://$(echo ${KAFKA_BS} | sed 's/,/\\,/g')"
 
-__usage="
+KUBE_CONTEXT=${KUBE_CONTEXT:-jp}
+
+if [ $# -eq 0 ]; then
+    echo $KUBE_CONTEXT
+    __usage="
 Example:
 
 kafkactl connect debezium-mysql install
 
 kafkactl connector s3 ordering install
 "
+    echo "$__usage"
+    exit 1
+fi
+
 
 COMMAND=$1
 ACTION=$COMMAND
@@ -32,7 +43,7 @@ if [[ "$COMMAND" == "connector" ]]; then
 fi
 
 k8s:pod() {
-    kubectl --context au-inf -n kafka get pod -l strimzi.io/name=${CONNECT_NAME}-connect -o jsonpath="{.items[0].metadata.name}"
+    kubectl --context ${KUBE_CONTEXT} -n kafka get pod -l strimzi.io/name=${CONNECT_NAME}-connect -o jsonpath="{.items[0].metadata.name}"
 }
 
 connect:rest() {
@@ -42,18 +53,29 @@ connect:rest() {
 
     local pod=$(k8s:pod)
     echo "[INFO] $pod -> $command"
-    kubectl --context au-inf -n kafka exec $pod -- $command | jq
+    kubectl --context ${KUBE_CONTEXT} -n kafka exec $pod -- $command | jq
+}
+
+connect:rest2() {
+    local method=$1
+    shift
+    local command="curl --silent -X ${method} localhost:8083$*"
+
+    local pod=$(k8s:pod)
+    kubectl --context ${KUBE_CONTEXT} -n kafka exec $pod -- $command
 }
 
 # --------
 connect:install() {
     cd ~/Entropy/lotreal/homework
-    kubectl apply -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.yaml -n kafka --context au-inf
+    echo kubectl apply -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.${RUNENV}.yaml -n kafka --context ${KUBE_CONTEXT}
+    kubectl apply -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.${RUNENV}.yaml -n kafka --context ${KUBE_CONTEXT}
 }
 
 connect:remove() {
     cd ~/Entropy/lotreal/homework
-    kubectl delete -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.yaml -n kafka --context au-inf
+    echo kubectl delete -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.${RUNENV}.yaml -n kafka --context ${KUBE_CONTEXT}
+    kubectl delete -f ./kafka/cdc-kafka/connect-${CONNECT_NAME}.${RUNENV}.yaml -n kafka --context ${KUBE_CONTEXT}
 }
 
 
@@ -72,7 +94,7 @@ connector:install() {
     local file=./kafka/cdc-kafka/${CONNECTOR}.json
     echo "[INFO] $pod -> POST $file"
     cd ~/Entropy/lotreal/homework
-    kubectl --context au-inf -n kafka exec $pod -- \
+    kubectl --context ${KUBE_CONTEXT} -n kafka exec $pod -- \
             curl --silent -X POST -d "$(cat $file)" \
             -H "Accept:application/json" \
             -H "Content-Type:application/json" \
@@ -82,12 +104,11 @@ connector:install() {
 connector:update() {
     local pod=$(k8s:pod)
     local file=./kafka/cdc-kafka/${CONNECTOR}.json
-    echo "[INFO] $pod -> POST $file"
+    echo "[INFO] $pod -> PUT $file"
     cd ~/Entropy/lotreal/homework
-    kubectl --context au-inf -n kafka exec $pod -- \
-            curl --silent -X PUT -d "$(cat $file)" \
-            -H "Accept:application/json" \
-            -H "Content-Type:application/json" \
+    kubectl --context ${KUBE_CONTEXT} -n kafka exec $pod -- \
+            curl --silent -X PUT --data "$(jq -c '.config' $file)" \
+            -H "Content-Type: application/json" \
             localhost:8083/connectors/${CONNECTOR}/config | jq
 }
 
@@ -97,6 +118,13 @@ connector:remove() {
 
 connector:status() {
     connect:rest GET /connectors/${CONNECTOR}/status
+}
+
+connector:error() {
+    local pod=$(k8s:pod)
+    kubectl --context ${KUBE_CONTEXT} -n kafka exec $pod -- \
+            curl --silent -X GET localhost:8083/connectors/${CONNECTOR}/status \
+            | jq  '.tasks[0].trace' | xargs echo -e
 }
 
 connector:config() {
@@ -126,7 +154,7 @@ topic:list() {
 }
 
 topic:consumer() {
-    ${KAFKA_BIN}/kafka-console-consumer.sh --bootstrap-server "$KAFKA_BS" --from-beginning --topic $1
+    ${KAFKA_BIN}/kafka-console-consumer.sh --bootstrap-server "$KAFKA_BS" --property print.key=true --property print.value=true --from-beginning --topic $1
 }
 
 topic:count() {
@@ -141,11 +169,11 @@ debug() {
 schemaregistry:install() {
     # helm repo add confluentinc https://confluentinc.github.io/cp-helm-charts/
     # helm repo update
-    cd INSTALL
+    cd ~/INSTALL
 
     # git clone https://github.com/confluentinc/cp-helm-charts.git
     helm upgrade --install cdc-sr cp-helm-charts/charts/cp-schema-registry \
-         --kube-context au-inf -n kafka \
+         --kube-context ${KUBE_CONTEXT} -n kafka \
          --set kafka.bootstrapServers="${KAFKA_URL}" \
          --set imageTag=6.2.0
 }
